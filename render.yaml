@@ -1,34 +1,34 @@
-# Render "Blueprint" — deploying this file once creates all 3 site bots
+# Render "Blueprint" — deploying this file once creates all 4 site bots
 # together (New -> Blueprint -> point it at this repo). Each service runs the
 # exact same code; only the environment variables differ, so editing bot.py,
-# committing, and pushing updates all three sites automatically.
+# committing, and pushing updates all four sites automatically.
 #
 # After the blueprint deploys, go into each service's Environment tab and
 # fill in the "sync: false" values below (Render leaves secrets blank on
 # purpose so they're never stored in this file / git history).
 services:
   - type: web
-    name: site1-expenses-bot
+    name: antelias-expenses-bot
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn bot:app
     envVars:
       - key: TELEGRAM_TOKEN
-        sync: false          # token from @BotFather for the Site 1 bot
+        sync: false          # token from @BotFather for the Antelias bot
       - key: ALLOWED_CHAT_IDS
         sync: false          # e.g. "111111111,222222222" (dad's id, your id)
       - key: SITE_NAME
-        value: "Site 1"
+        value: "Antelias"
       - key: GITHUB_TOKEN
         sync: false          # a GitHub Personal Access Token with repo contents read/write
       - key: GITHUB_REPO
         sync: false          # e.g. "joeazar2003/dad-construction-bot"
       - key: GITHUB_FILE_PATH
-        value: "data/site1.xlsx"
+        value: "data/antelias.xlsx"
 
   - type: web
-    name: site2-expenses-bot
+    name: mtaileb-expenses-bot
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
@@ -39,16 +39,16 @@ services:
       - key: ALLOWED_CHAT_IDS
         sync: false
       - key: SITE_NAME
-        value: "Site 2"
+        value: "Mtaileb"
       - key: GITHUB_TOKEN
         sync: false
       - key: GITHUB_REPO
         sync: false
       - key: GITHUB_FILE_PATH
-        value: "data/site2.xlsx"
+        value: "data/mtaileb.xlsx"
 
   - type: web
-    name: site3-expenses-bot
+    name: tabarja-expenses-bot
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
@@ -59,10 +59,30 @@ services:
       - key: ALLOWED_CHAT_IDS
         sync: false
       - key: SITE_NAME
-        value: "Site 3"
+        value: "Tabarja"
       - key: GITHUB_TOKEN
         sync: false
       - key: GITHUB_REPO
         sync: false
       - key: GITHUB_FILE_PATH
-        value: "data/site3.xlsx"
+        value: "data/tabarja.xlsx"
+
+  - type: web
+    name: zaarour-expenses-bot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn bot:app
+    envVars:
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: ALLOWED_CHAT_IDS
+        sync: false
+      - key: SITE_NAME
+        value: "Zaarour"
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_REPO
+        sync: false
+      - key: GITHUB_FILE_PATH
+        value: "data/zaarour.xlsx"
