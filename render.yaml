@@ -1,0 +1,68 @@
+# Render "Blueprint" — deploying this file once creates all 3 site bots
+# together (New -> Blueprint -> point it at this repo). Each service runs the
+# exact same code; only the environment variables differ, so editing bot.py,
+# committing, and pushing updates all three sites automatically.
+#
+# After the blueprint deploys, go into each service's Environment tab and
+# fill in the "sync: false" values below (Render leaves secrets blank on
+# purpose so they're never stored in this file / git history).
+services:
+  - type: web
+    name: site1-expenses-bot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn bot:app
+    envVars:
+      - key: TELEGRAM_TOKEN
+        sync: false          # token from @BotFather for the Site 1 bot
+      - key: ALLOWED_CHAT_IDS
+        sync: false          # e.g. "111111111,222222222" (dad's id, your id)
+      - key: SITE_NAME
+        value: "Site 1"
+      - key: GITHUB_TOKEN
+        sync: false          # a GitHub Personal Access Token with repo contents read/write
+      - key: GITHUB_REPO
+        sync: false          # e.g. "joeazar2003/dad-construction-bot"
+      - key: GITHUB_FILE_PATH
+        value: "data/site1.xlsx"
+
+  - type: web
+    name: site2-expenses-bot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn bot:app
+    envVars:
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: ALLOWED_CHAT_IDS
+        sync: false
+      - key: SITE_NAME
+        value: "Site 2"
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_REPO
+        sync: false
+      - key: GITHUB_FILE_PATH
+        value: "data/site2.xlsx"
+
+  - type: web
+    name: site3-expenses-bot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn bot:app
+    envVars:
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: ALLOWED_CHAT_IDS
+        sync: false
+      - key: SITE_NAME
+        value: "Site 3"
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_REPO
+        sync: false
+      - key: GITHUB_FILE_PATH
+        value: "data/site3.xlsx"
