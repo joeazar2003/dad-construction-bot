@@ -26,6 +26,8 @@ services:
         sync: false          # e.g. "joeazar2003/dad-construction-bot"
       - key: GITHUB_FILE_PATH
         value: "data/antelias.xlsx"
+      - key: NOTIFY_CHAT_ID
+        value: "6272061636"  # Joe — gets a copy whenever anyone else logs/undoes an entry
 
   - type: web
     name: mtaileb-expenses-bot
@@ -46,6 +48,8 @@ services:
         sync: false
       - key: GITHUB_FILE_PATH
         value: "data/mtaileb.xlsx"
+      - key: NOTIFY_CHAT_ID
+        value: "6272061636"  # Joe — gets a copy whenever anyone else logs/undoes an entry
 
   - type: web
     name: tabarja-expenses-bot
@@ -66,6 +70,8 @@ services:
         sync: false
       - key: GITHUB_FILE_PATH
         value: "data/tabarja.xlsx"
+      - key: NOTIFY_CHAT_ID
+        value: "6272061636"  # Joe — gets a copy whenever anyone else logs/undoes an entry
 
   - type: web
     name: zaarour-expenses-bot
@@ -86,3 +92,5 @@ services:
         sync: false
       - key: GITHUB_FILE_PATH
         value: "data/zaarour.xlsx"
+      - key: NOTIFY_CHAT_ID
+        value: "6272061636"  # Joe — gets a copy whenever anyone else logs/undoes an entry
