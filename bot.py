@@ -26,6 +26,10 @@ ALLOWED_CHAT_IDS = {
 }
 # A human label for which job site this instance is, shown in replies — e.g. "Site 1 - Main St".
 SITE_NAME = os.environ.get("SITE_NAME", "Site")
+# Optional: a single chat id that gets a copy of every log/undo made by someone else
+# (e.g. your own chat id, so you see it whenever dad logs an expense).
+_NOTIFY_RAW = os.environ.get("NOTIFY_CHAT_ID", "").strip()
+NOTIFY_CHAT_ID = int(_NOTIFY_RAW) if _NOTIFY_RAW else None
 
 API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 XLSX_PATH = os.environ.get("XLSX_LOCAL_PATH", "expenses.xlsx")
@@ -342,6 +346,12 @@ def send_message(chat_id, text):
     requests.post(f"{API_URL}/sendMessage", json={"chat_id": chat_id, "text": text})
 
 
+def notify_owner(chat_id, text):
+    """Send a copy of an event to NOTIFY_CHAT_ID, unless that's who triggered it."""
+    if NOTIFY_CHAT_ID and chat_id != NOTIFY_CHAT_ID:
+        send_message(NOTIFY_CHAT_ID, text)
+
+
 def send_document(chat_id):
     ensure_workbook()
     with open(XLSX_PATH, "rb") as f:
@@ -397,6 +407,7 @@ def webhook():
     update = request.get_json(force=True, silent=True) or {}
     message = update.get("message", {})
     chat_id = message.get("chat", {}).get("id")
+    sender_name = message.get("from", {}).get("first_name") or "Someone"
 
     if chat_id is None:
         return "ok"
@@ -418,6 +429,7 @@ def webhook():
             append_entry(pending_amount, pending_category, pending_note)
             total, count = get_total()
             send_message(chat_id, f"Logged ${pending_amount:,.2f} ({pending_category}). Running total: ${total:,.2f} ({count} entries).")
+            notify_owner(chat_id, f"📋 {sender_name} logged ${pending_amount:,.2f} ({pending_category}) at {SITE_NAME} — {pending_note or 'no note'}. Site total: ${total:,.2f} ({count} entries).")
             return "ok"
         elif text.lower() in ("no", "n", "cancel"):
             pending_confirmations.pop(chat_id, None)
@@ -459,6 +471,7 @@ def webhook():
         removed = undo_last()
         if removed:
             send_message(chat_id, f"Removed: {removed[0]} — ${removed[1]} ({removed[2]}) {removed[3] or 'no note'}")
+            notify_owner(chat_id, f"↩️ {sender_name} removed an entry at {SITE_NAME}: ${removed[1]} ({removed[2]}) {removed[3] or 'no note'}.")
         else:
             send_message(chat_id, "Nothing to undo.")
         return "ok"
@@ -483,6 +496,7 @@ def webhook():
     total, count = get_total()
     warn = "" if ok or not github_store.ENABLED else " ⚠️ couldn't back this up to GitHub yet, will retry"
     send_message(chat_id, f"Logged ${amount:,.2f} as *{category}*. Running total: ${total:,.2f} ({count} entries).{warn}")
+    notify_owner(chat_id, f"📋 {sender_name} logged ${amount:,.2f} ({category}) at {SITE_NAME} — {note or 'no note'}. Site total: ${total:,.2f} ({count} entries).")
     return "ok"
 
 
