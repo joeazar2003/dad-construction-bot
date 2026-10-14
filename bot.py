@@ -1,5 +1,7 @@
 import os
 import re
+import threading
+import time
 from collections import defaultdict
 from datetime import datetime
 
@@ -42,6 +44,20 @@ THIN_SIDE = Side(style="thin", color="B7B7B7")
 CELL_BORDER = Border(left=THIN_SIDE, right=THIN_SIDE, top=THIN_SIDE, bottom=THIN_SIDE)
 
 pending_confirmations = {}
+
+# --- Background safety net -------------------------------------------------
+# Guards every read/write of XLSX_PATH so the background sync thread below
+# never runs at the same moment a Telegram message is being handled.
+_DATA_LOCK = threading.RLock()
+# Set whenever a write to GitHub fails (e.g. GitHub was briefly down), cleared
+# once it succeeds. While this is true the background thread keeps retrying
+# the *push* — it will never pull-and-overwrite local data that hasn't made
+# it to GitHub yet, which is the one thing that could lose an entry.
+_dirty = False
+# Last time we refreshed the local file from GitHub (startup counts as one).
+_last_pull_at = datetime.now()
+PULL_INTERVAL_SECONDS = 24 * 60 * 60  # refresh from GitHub once a day, just in case
+RETRY_INTERVAL_SECONDS = 5 * 60  # if a push ever fails, keep retrying every 5 minutes
 
 HELP_TEXT = (
     f"Hey! This is the *{SITE_NAME}* expense bot. Just text me an amount whenever you spend "
@@ -147,10 +163,11 @@ def get_last_entry(ws):
 
 
 def is_recent_duplicate(amount, minutes=10):
-    ensure_workbook()
-    wb = load_workbook(XLSX_PATH)
-    ws = wb["Log"]
-    last = get_last_entry(ws)
+    with _DATA_LOCK:
+        ensure_workbook()
+        wb = load_workbook(XLSX_PATH)
+        ws = wb["Log"]
+        last = get_last_entry(ws)
     if not last or last[1] is None:
         return False
     try:
@@ -163,37 +180,39 @@ def is_recent_duplicate(amount, minutes=10):
 
 
 def get_category_breakdown():
-    ensure_workbook()
-    wb = load_workbook(XLSX_PATH)
-    ws = wb["Log"]
-    totals = defaultdict(float)
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        if is_total_row(row):
-            continue
-        amount, category = row[1], row[2]
-        if amount is None:
-            continue
-        totals[category or "Other"] += float(amount)
-    return totals
+    with _DATA_LOCK:
+        ensure_workbook()
+        wb = load_workbook(XLSX_PATH)
+        ws = wb["Log"]
+        totals = defaultdict(float)
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if is_total_row(row):
+                continue
+            amount, category = row[1], row[2]
+            if amount is None:
+                continue
+            totals[category or "Other"] += float(amount)
+        return totals
 
 
 def get_month_total(year, month):
-    ensure_workbook()
-    wb = load_workbook(XLSX_PATH)
-    ws = wb["Log"]
-    total, count = 0.0, 0
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        date_str, amount = row[0], row[1]
-        if not date_str or amount is None:
-            continue
-        try:
-            dt = datetime.strptime(str(date_str), "%Y-%m-%d %H:%M")
-        except ValueError:
-            continue
-        if dt.year == year and dt.month == month:
-            total += float(amount)
-            count += 1
-    return total, count
+    with _DATA_LOCK:
+        ensure_workbook()
+        wb = load_workbook(XLSX_PATH)
+        ws = wb["Log"]
+        total, count = 0.0, 0
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            date_str, amount = row[0], row[1]
+            if not date_str or amount is None:
+                continue
+            try:
+                dt = datetime.strptime(str(date_str), "%Y-%m-%d %H:%M")
+            except ValueError:
+                continue
+            if dt.year == year and dt.month == month:
+                total += float(amount)
+                count += 1
+        return total, count
 
 
 def style_header(ws, ncols=4):
@@ -246,17 +265,18 @@ def finalize_log_sheet(ws):
 
 
 def ensure_workbook():
-    if not os.path.exists(XLSX_PATH):
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Log"
-        ws.append(["Date", "Amount", "Category", "Note"])
-        style_header(ws)
-        ws.column_dimensions["A"].width = 18
-        ws.column_dimensions["B"].width = 12
-        ws.column_dimensions["C"].width = 18
-        ws.column_dimensions["D"].width = 45
-        wb.save(XLSX_PATH)
+    with _DATA_LOCK:
+        if not os.path.exists(XLSX_PATH):
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Log"
+            ws.append(["Date", "Amount", "Category", "Note"])
+            style_header(ws)
+            ws.column_dimensions["A"].width = 18
+            ws.column_dimensions["B"].width = 12
+            ws.column_dimensions["C"].width = 18
+            ws.column_dimensions["D"].width = 45
+            wb.save(XLSX_PATH)
 
 
 def rebuild_summary(wb):
@@ -300,46 +320,57 @@ def rebuild_summary(wb):
 
 
 def append_entry(amount, category, note):
-    ensure_workbook()
-    wb = load_workbook(XLSX_PATH)
-    ws = wb["Log"]
-    strip_total_row(ws)
-    ws.append([datetime.now().strftime("%Y-%m-%d %H:%M"), amount, category, note])
-    finalize_log_sheet(ws)
-    rebuild_summary(wb)
-    wb.save(XLSX_PATH)
-    return github_store.push_current_with_retry(XLSX_PATH, f"Log ${amount:,.2f} ({category}) — {SITE_NAME}")
+    global _dirty
+    with _DATA_LOCK:
+        ensure_workbook()
+        wb = load_workbook(XLSX_PATH)
+        ws = wb["Log"]
+        strip_total_row(ws)
+        ws.append([datetime.now().strftime("%Y-%m-%d %H:%M"), amount, category, note])
+        finalize_log_sheet(ws)
+        rebuild_summary(wb)
+        wb.save(XLSX_PATH)
+        ok = github_store.push_current_with_retry(XLSX_PATH, f"Log ${amount:,.2f} ({category}) — {SITE_NAME}")
+        # If GitHub couldn't be reached, mark us dirty so the background thread
+        # keeps retrying the push instead of ever pulling (and overwriting this
+        # entry before it's safely backed up).
+        _dirty = _dirty or (github_store.ENABLED and not ok)
+        return ok
 
 
 def undo_last():
-    ensure_workbook()
-    wb = load_workbook(XLSX_PATH)
-    ws = wb["Log"]
-    strip_total_row(ws)
-    if ws.max_row <= 1:
-        return None
-    last_row = [c.value for c in ws[ws.max_row]]
-    ws.delete_rows(ws.max_row)
-    finalize_log_sheet(ws)
-    rebuild_summary(wb)
-    wb.save(XLSX_PATH)
-    github_store.push_current_with_retry(XLSX_PATH, f"Undo last entry — {SITE_NAME}")
-    return last_row
+    global _dirty
+    with _DATA_LOCK:
+        ensure_workbook()
+        wb = load_workbook(XLSX_PATH)
+        ws = wb["Log"]
+        strip_total_row(ws)
+        if ws.max_row <= 1:
+            return None
+        last_row = [c.value for c in ws[ws.max_row]]
+        ws.delete_rows(ws.max_row)
+        finalize_log_sheet(ws)
+        rebuild_summary(wb)
+        wb.save(XLSX_PATH)
+        ok = github_store.push_current_with_retry(XLSX_PATH, f"Undo last entry — {SITE_NAME}")
+        _dirty = _dirty or (github_store.ENABLED and not ok)
+        return last_row
 
 
 def get_total():
-    ensure_workbook()
-    wb = load_workbook(XLSX_PATH)
-    ws = wb["Log"]
-    total = 0.0
-    count = 0
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        if is_total_row(row):
-            continue
-        if row[1] is not None:
-            total += float(row[1])
-            count += 1
-    return total, count
+    with _DATA_LOCK:
+        ensure_workbook()
+        wb = load_workbook(XLSX_PATH)
+        ws = wb["Log"]
+        total = 0.0
+        count = 0
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if is_total_row(row):
+                continue
+            if row[1] is not None:
+                total += float(row[1])
+                count += 1
+        return total, count
 
 
 def send_message(chat_id, text):
@@ -353,13 +384,15 @@ def notify_owner(chat_id, text):
 
 
 def send_document(chat_id):
-    ensure_workbook()
-    with open(XLSX_PATH, "rb") as f:
-        requests.post(
-            f"{API_URL}/sendDocument",
-            data={"chat_id": chat_id},
-            files={"document": (f"{SITE_NAME.replace(' ', '_')}_expenses.xlsx", f)},
-        )
+    with _DATA_LOCK:
+        ensure_workbook()
+        with open(XLSX_PATH, "rb") as f:
+            file_bytes = f.read()
+    requests.post(
+        f"{API_URL}/sendDocument",
+        data={"chat_id": chat_id},
+        files={"document": (f"{SITE_NAME.replace(' ', '_')}_expenses.xlsx", file_bytes)},
+    )
 
 
 def handle_incoming_document(chat_id, document):
@@ -382,6 +415,7 @@ def handle_incoming_document(chat_id, document):
     with open(tmp_path, "wb") as f:
         f.write(resp.content)
 
+    global _dirty
     try:
         wb = load_workbook(tmp_path)
         if "Log" not in wb.sheetnames:
@@ -391,12 +425,14 @@ def handle_incoming_document(chat_id, document):
         send_message(chat_id, "I couldn't read that file properly (it needs a 'Log' sheet), so I kept your old data.")
         return
 
-    ws = wb["Log"]
-    finalize_log_sheet(ws)
-    rebuild_summary(wb)
-    wb.save(tmp_path)
-    os.replace(tmp_path, XLSX_PATH)
-    ok = github_store.push_current_with_retry(XLSX_PATH, f"Manual edit uploaded via Telegram — {SITE_NAME}")
+    with _DATA_LOCK:
+        ws = wb["Log"]
+        finalize_log_sheet(ws)
+        rebuild_summary(wb)
+        wb.save(tmp_path)
+        os.replace(tmp_path, XLSX_PATH)
+        ok = github_store.push_current_with_retry(XLSX_PATH, f"Manual edit uploaded via Telegram — {SITE_NAME}")
+        _dirty = _dirty or (github_store.ENABLED and not ok)
     total, count = get_total()
     note = "" if ok or not github_store.ENABLED else " (heads up: couldn't save this to GitHub, will retry on next entry)"
     send_message(chat_id, f"Got it — saved your edits. Running total is now ${total:,.2f} ({count} entries).{note} New entries will build on top of this.")
@@ -505,17 +541,51 @@ def health():
     return f"{SITE_NAME} expense bot is running."
 
 
+def _background_sync():
+    """Runs for as long as the process stays alive. Two jobs, checked every
+    few minutes:
+
+    1. If an earlier push to GitHub ever failed (_dirty), keep retrying it.
+       This never pulls while dirty — pulling would overwrite local data that
+       hasn't made it to GitHub yet, which is the one way this could lose an
+       entry.
+    2. Otherwise, once a day, re-download the file from GitHub so the local
+       copy can't silently drift from the source of truth even if this
+       instance happens to stay awake (and never restart-and-repull) for a
+       long stretch.
+    """
+    global _dirty, _last_pull_at
+    while True:
+        time.sleep(RETRY_INTERVAL_SECONDS)
+        if not github_store.ENABLED:
+            continue
+        try:
+            with _DATA_LOCK:
+                if _dirty:
+                    ok = github_store.push_current_with_retry(XLSX_PATH, f"Resync after earlier failure — {SITE_NAME}")
+                    if ok:
+                        _dirty = False
+                elif (datetime.now() - _last_pull_at).total_seconds() >= PULL_INTERVAL_SECONDS:
+                    github_store.pull_latest(XLSX_PATH)
+                    _last_pull_at = datetime.now()
+        except Exception:
+            pass  # transient network hiccup — just try again next cycle
+
+
 def _bootstrap():
     """Runs once when the process starts: pull the real data from GitHub before
     anything else touches the local (ephemeral) file."""
+    global _last_pull_at
     try:
         found = github_store.pull_latest(XLSX_PATH)
         if not found:
             ensure_workbook()
+        _last_pull_at = datetime.now()
     except Exception:
         # If GitHub is briefly unreachable at boot, don't crash — fall back to
         # whatever's on local disk (or a fresh workbook) and keep trying to push on writes.
         ensure_workbook()
+    threading.Thread(target=_background_sync, daemon=True).start()
 
 
 _bootstrap()
